@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ID Logger</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 920px;
+            margin: 18px auto;
+        }
+
+        h1 {
+            color: #197278;
+            margin-bottom: 6px;
+        }
+
+        label {
+            display: block;
+            margin-top: 10px;
+        }
+
+        input[type="file"] {
+            margin-top: 6px;
+        }
+
+        button {
+            margin: 8px 6px 8px 0;
+            padding: 8px 12px;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+
+        #status {
+            margin-top: 10px;
+            padding: 10px;
+            border-left: 4px solid #197278;
+            background: #f7fbfb;
+        }
+
+        .file-row {
+            border: 1px solid #ddd;
+            padding: 8px;
+            margin: 8px 0;
+            background: #fff;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+        }
+
+        .file-meta {
+            flex: 1;
+        }
+
+        .file-actions {
+            width: 220px;
+        }
+
+        .sample {
+            font-family: monospace;
+            font-size: .9rem;
+            color: #333;
+            margin-top: 6px;
+            background: #f4f7f7;
+            padding: 6px;
+            border-radius: 4px;
+        }
+
+        #results {
+            border: 1px solid #ccc;
+            padding: 12px;
+            margin-top: 12px;
+            min-height: 120px;
+            background: #fff;
+        }
+
+        .flag-ea {
+            background-color: #fff9c4;
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        .flag-inn {
+            color: #1565c0;
+            font-weight: 700;
+        }
+
+        .warning {
+            color: #d32f2f;
+            font-weight: bold;
+        }
+
+        .success {
+            color: #2e7d32;
+            font-weight: bold;
+        }
+
+        #counter {
+            margin-top: 12px;
+            font-weight: bold;
+        }
+
+        .small-muted {
+            color: #666;
+            font-size: .9rem;
+        }
+
+        .disabled {
+            opacity: .55;
+            pointer-events: none;
+        }
+
+        /* === Dark Mode Styles === */
+        body.dark-mode {
+            background-color: #121212;
+            color: #e0e0e0;
+        }
+
+            body.dark-mode #status,
+            body.dark-mode #results {
+                background-color: #1e1e1e;
+                border-color: #333;
+            }
+
+            body.dark-mode .file-row {
+                background-color: #1e1e1e;
+                border-color: #333;
+            }
+
+            body.dark-mode button,
+            body.dark-mode input[type="text"],
+            body.dark-mode input[type="file"],
+            body.dark-mode select {
+                background-color: #2c2c2c;
+                color: #ddd;
+                border: 1px solid #555;
+            }
+
+                body.dark-mode button:hover {
+                    background-color: #444;
+                }
+
+            body.dark-mode .flag-ea {
+                background-color: #fff176; /* a darker yellow */
+                color: #000;
+            }
+
+            body.dark-mode .flag-inn {
+                color: #82b1ff; /* lighter blue */
+            }
+
+            body.dark-mode .warning {
+                color: #ff6e6e;
+            }
+
+            body.dark-mode .success {
+                color: #81c784;
+            }
+
+            body.dark-mode .small-muted {
+                color: #aaa;
+            }
+    </style>
+</head>
+<body>
+
+    <h1>🪪 ID Logger - By Eddie</h1>
+    <button id="toggleDarkMode" style="margin-bottom: 12px;">🌙DarkMode ON/OFF</button>
+    <p class="small-muted">Upload your roster CSVs (ActiveBadges / Incoming).</p>
+
+    <label for="csvFiles">Select CSV files (you can upload multiple):</label>
+    <input id="csvFiles" type="file" accept=".csv" multiple />
+
+    <div style="margin-top:8px;">
+        <button id="parseBtn" disabled>Parse & Detect Files</button>
+        <button id="rebuildBtn" disabled>Rebuild Lookup</button>
+    </div>
+
+    <div id="status">
+        <div id="fileMappingArea"></div>
+        <div id="loadSummary"></div>
+    </div>
+
+    <hr />
+
+    <label for="scanInput">Scan or type UID (continuous mode):</label>
+    <input id="scanInput" type="text" placeholder="Scan or paste UID and press Enter" autocomplete="off" disabled style="width:420px; padding:8px;">
+
+    <div id="results"></div>
+
+    <div id="counter">Unique cards scanned: 0</div>
+
+    <div style="margin-top:10px;">
+        <button id="exportBtn" disabled>Export Scan Log as XLSX</button>
+        <button id="clearBtn" class="disabled">Clear Scan Log</button>
+    </div>
+
+    <!-- libs -->
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+
+    <script>
+        (() => {
+            // --- State containers ---
+            const filesData = []; // { name, rows: [normalizedRow], headers:[], detectedType: 'active'|'incoming'|'unknown' }
+            let lookup = {};      // uid -> merged info
+            let scannedUIDs = new Set();
+            let scanLog = [];
+
+            // DOM refs
+            const csvFilesInput = document.getElementById('csvFiles');
+            const parseBtn = document.getElementById('parseBtn');
+            const rebuildBtn = document.getElementById('rebuildBtn');
+            const fileMappingArea = document.getElementById('fileMappingArea');
+            const loadSummary = document.getElementById('loadSummary');
+            const scanInput = document.getElementById('scanInput');
+            const resultsDiv = document.getElementById('results');
+            const counterDiv = document.getElementById('counter');
+            const exportBtn = document.getElementById('exportBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const toggleBtn = document.getElementById('toggleDarkMode');
+
+
+            // enable parse button when files chosen
+            csvFilesInput.addEventListener('change', () => {
+                parseBtn.disabled = csvFilesInput.files.length === 0;
+            });
+
+            // helper: normalize keys and values of a PapaParse row
+            function normalizeRow(row) {
+                const out = {};
+                for (const rawKey in row) {
+                    const key = String(rawKey || '').trim().toLowerCase();
+                    const val = row[rawKey] == null ? '' : String(row[rawKey]).trim();
+                    if (key.length) out[key] = val;
+                }
+                return out;
+            }
+
+            // helper: determine probable UID from a row (look for common headers)
+            function getUidFromRow(row) {
+                const possible = ['uid', 'id', 'card id', 'cardid', 'badge id', 'badgeid', 'card_number', 'cardnumber', 'badge_number', 'badge'];
+                for (const k of possible) {
+                    if (k in row && row[k]) {
+                        const digits = String(row[k]).replace(/\D/g, '').trim();
+                        if (digits.length) return digits;
+                    }
+                }
+                // fallback: scan any field for a long-ish digit sequence
+                for (const k in row) {
+                    const digits = String(row[k]).replace(/\D/g, '').trim();
+                    if (digits.length >= 6) return digits;
+                }
+                return null;
+            }
+
+            // helper to get field value by testing multiple possible header names
+            function getField(row, keys) {
+                for (const k of keys) {
+                    if (k in row && row[k]) return row[k];
+                }
+                return '';
+            }
+
+            // detect file type heuristics using headers & filename hints
+            function detectFileTypeFromSample(rows, filename) {
+                if (!rows || rows.length === 0) return 'unknown';
+                const headers = Object.keys(rows[0]);
+
+                const activeKeywords = ['badge', 'badge type', 'ic', 'issue code', 'issuecode', 'badge_type', 'badge_type'];
+                const incomingKeywords = ['room', 'ea', 'early arrival', 'ea flag', 'room number', 'room#'];
+
+                let scoreActive = 0, scoreIncoming = 0;
+                for (const h of headers) {
+                    const hh = h.toLowerCase();
+                    for (const kw of activeKeywords) if (hh.includes(kw)) scoreActive++;
+                    for (const kw of incomingKeywords) if (hh.includes(kw)) scoreIncoming++;
+                }
+
+                const lf = filename.toLowerCase();
+                if (lf.includes('active') || lf.includes('badges')) scoreActive += 2;
+                if (lf.includes('incoming')) scoreIncoming += 2;
+
+                if (scoreActive === 0 && scoreIncoming === 0) return 'unknown';
+                return (scoreActive >= scoreIncoming) ? 'active' : 'incoming';
+            }
+
+            // parse one CSV file with PapaParse (returns array of normalized rows)
+            function parseCSVFile(file) {
+                return new Promise((resolve, reject) => {
+                    Papa.parse(file, {
+                        header: true,
+                        skipEmptyLines: true,
+                        transformHeader: h => h, // we'll normalize later
+                        complete: res => {
+                            const normalized = res.data.map(normalizeRow);
+                            resolve(normalized);
+                        },
+                        error: err => reject(err)
+                    });
+                });
+            }
+
+            // parse all user-selected files and populate filesData array
+            async function parseAllFiles(files) {
+                filesData.length = 0;
+                lookup = {};
+                scannedUIDs.clear();
+                scanLog = [];
+                renderFileMappingUI(); // clear
+                loadSummary.textContent = 'Parsing files...';
+                parseBtn.disabled = true;
+                rebuildBtn.disabled = true;
+                scanInput.disabled = true;
+                exportBtn.disabled = true;
+                clearBtn.classList.add('disabled');
+
+                for (const file of files) {
+                    try {
+                        const rows = await parseCSVFile(file);
+                        const detected = detectFileTypeFromSample(rows, file.name);
+                        const headers = rows.length ? Object.keys(rows[0]) : [];
+                        filesData.push({
+                            name: file.name,
+                            rows,
+                            headers,
+                            detectedType: detected
+                        });
+                    } catch (e) {
+                        filesData.push({
+                            name: file.name,
+                            rows: [],
+                            headers: [],
+                            detectedType: 'unknown',
+                            error: e.message || String(e)
+                        });
+                    }
+                }
+
+                renderFileMappingUI();
+                buildLookup();
+                loadSummary.innerHTML = `Files parsed. Total files: <strong>${filesData.length}</strong>. Lookup size: <strong>${Object.keys(lookup).length}</strong> UIDs.`;
+                parseBtn.disabled = false;
+                rebuildBtn.disabled = false;
+                if (Object.keys(lookup).length) {
+                    scanInput.disabled = false;
+                    exportBtn.disabled = false;
+                    clearBtn.classList.remove('disabled');
+                    scanInput.focus();
+                }
+            }
+
+            // render UI for file mapping and detection (lets user override)
+            function renderFileMappingUI() {
+                fileMappingArea.innerHTML = '';
+                if (!filesData.length) {
+                    fileMappingArea.innerHTML = '<div class="small-muted">No files parsed yet.</div>';
+                    return;
+                }
+
+                filesData.forEach((fd, idx) => {
+                    const rowDiv = document.createElement('div');
+                    rowDiv.className = 'file-row';
+
+                    const meta = document.createElement('div');
+                    meta.className = 'file-meta';
+                    const title = document.createElement('div');
+                    title.innerHTML = `<strong>${fd.name}</strong> &nbsp; <span class="small-muted">(${fd.rows.length} rows)</span>`;
+                    meta.appendChild(title);
+
+                    const det = document.createElement('div');
+                    det.innerHTML = `<div>Detected type: <strong>${fd.detectedType}</strong></div>`;
+                    meta.appendChild(det);
+
+                    const headers = document.createElement('div');
+                    headers.className = 'small-muted';
+                    headers.innerHTML = `Headers: ${fd.headers.length ? fd.headers.join(', ') : '(none)'}`;
+                    meta.appendChild(headers);
+
+                    if (fd.rows && fd.rows.length) {
+                        const sample = document.createElement('div');
+                        sample.className = 'sample';
+                        const sampleObj = fd.rows[0];
+                        // show first row key:values (trimmed)
+                        const kv = Object.entries(sampleObj).slice(0, 8).map(([k, v]) => `${k}: ${v}`).join(' | ');
+                        sample.textContent = kv;
+                        meta.appendChild(sample);
+                    } else if (fd.error) {
+                        const err = document.createElement('div');
+                        err.className = 'warning';
+                        err.textContent = `Parse error: ${fd.error}`;
+                        meta.appendChild(err);
+                    }
+
+                    rowDiv.appendChild(meta);
+
+                    const actions = document.createElement('div');
+                    actions.className = 'file-actions';
+                    const btnActive = document.createElement('button');
+                    btnActive.textContent = 'Set ActiveBadges';
+                    btnActive.addEventListener('click', () => {
+                        filesData[idx].detectedType = 'active';
+                        buildLookup();
+                        renderFileMappingUI();
+                        loadSummary.innerHTML = `Rebuilt lookup. Lookup size: <strong>${Object.keys(lookup).length}</strong> UIDs.`;
+                    });
+
+                    const btnIncoming = document.createElement('button');
+                    btnIncoming.textContent = 'Set Incoming';
+                    btnIncoming.addEventListener('click', () => {
+                        filesData[idx].detectedType = 'incoming';
+                        buildLookup();
+                        renderFileMappingUI();
+                        loadSummary.innerHTML = `Rebuilt lookup. Lookup size: <strong>${Object.keys(lookup).length}</strong> UIDs.`;
+                    });
+
+                    const btnSkip = document.createElement('button');
+                    btnSkip.textContent = 'Skip File';
+                    btnSkip.addEventListener('click', () => {
+                        filesData[idx].detectedType = 'skip';
+                        buildLookup();
+                        renderFileMappingUI();
+                        loadSummary.innerHTML = `Rebuilt lookup. Lookup size: <strong>${Object.keys(lookup).length}</strong> UIDs.`;
+                    });
+
+                    actions.appendChild(btnActive);
+                    actions.appendChild(btnIncoming);
+                    actions.appendChild(btnSkip);
+
+                    rowDiv.appendChild(actions);
+                    fileMappingArea.appendChild(rowDiv);
+                });
+            }
+
+            // Build the lookup dictionary from currently assigned file types
+            function buildLookup() {
+                lookup = {};
+                const activeRows = [];
+                const incomingRows = [];
+
+                for (const fd of filesData) {
+                    if (fd.detectedType === 'active') {
+                        activeRows.push(...fd.rows);
+                    } else if (fd.detectedType === 'incoming') {
+                        incomingRows.push(...fd.rows);
+                    } // skip others
+                }
+
+                // from Active rows - populate base info
+                for (const r of activeRows) {
+                    const uid = getUidFromRow(r);
+                    if (!uid) continue;
+                    // get fields heuristically
+                    const name = getField(r, ['name', 'full name', 'fullname', 'display name']);
+                    const badgeType = getField(r, ['badge type', 'badge', 'badge_type']);
+                    const ic = getField(r, ['ic', 'issue code', 'issuecode', 'issue_code']);
+                    lookup[uid] = {
+                        uid,
+                        name,
+                        badgeType,
+                        ic,
+                        room: '',
+                        ea: ''
+                    };
+                }
+
+                // from Incoming rows - override/augment
+                for (const r of incomingRows) {
+                    const uid = getUidFromRow(r);
+                    if (!uid) continue;
+                    const room = getField(r, ['room', 'room number', 'room#']);
+                    const ea = getField(r, ['ea', 'early arrival', 'ea flag']);
+                    const name = getField(r, ['name', 'full name', 'fullname']);
+                    if (!lookup[uid]) {
+                        lookup[uid] = { uid, name, badgeType: '', ic: '', room: room || '', ea: ea || '' };
+                    } else {
+                        if (room) lookup[uid].room = room;
+                        if (ea) lookup[uid].ea = ea;
+                        // if incoming provides a name but active didn't, use it
+                        if (!lookup[uid].name && name) lookup[uid].name = name;
+                    }
+                }
+
+                // update summary
+                loadSummary.innerHTML = `Lookup built: <strong>${Object.keys(lookup).length}</strong> unique UIDs loaded.`;
+                // enable scan if lookup has entries
+                if (Object.keys(lookup).length > 0) {
+                    scanInput.disabled = false;
+                    exportBtn.disabled = false;
+                    clearBtn.classList.remove('disabled');
+                    scanInput.focus();
+                } else {
+                    scanInput.disabled = true;
+                    exportBtn.disabled = true;
+                    clearBtn.classList.add('disabled');
+                }
+            }
+
+            // display result to user
+            function displayScanResult(info, isDuplicate) {
+                resultsDiv.innerHTML = '';
+                if (isDuplicate) {
+                    const d = document.createElement('div');
+                    d.className = 'warning';
+                    d.textContent = `Duplicate scan detected for "${info.name || '(unknown)'}" — skipping.`;
+                    resultsDiv.appendChild(d);
+                    return;
+                }
+                const out = document.createElement('div');
+
+                const uidP = document.createElement('div'); uidP.textContent = `UID: ${info.uid}`; out.appendChild(uidP);
+                const nameP = document.createElement('div'); nameP.textContent = `Name: ${info.name || '(none)'}`; out.appendChild(nameP);
+                const btP = document.createElement('div'); btP.textContent = `Badge Type: ${info.badgeType || '(none)'}`; out.appendChild(btP);
+                const icP = document.createElement('div'); icP.textContent = `Issue Code (IC): ${info.ic || '(none)'}`; out.appendChild(icP);
+
+                const roomP = document.createElement('div');
+                roomP.textContent = `Room: ${info.room || '(None)'}`;
+                if (info.room && /rit inn|inn/i.test(info.room)) roomP.classList.add('flag-inn');
+                out.appendChild(roomP);
+
+                const eaP = document.createElement('div');
+                eaP.textContent = `EA Flag: ${info.ea || 'No'}`;
+                if (info.ea && /^ea$/i.test(String(info.ea).trim())) eaP.classList.add('flag-ea');
+                out.appendChild(eaP);
+
+                resultsDiv.appendChild(out);
+            }
+
+            function updateCounter() {
+                counterDiv.textContent = `Unique cards scanned: ${scannedUIDs.size}`;
+            }
+
+            // scanning logic — continuous mode, keeps focus
+            scanInput.addEventListener('keydown', e => {
+                if (e.key !== 'Enter') return;
+                const raw = scanInput.value.trim();
+                if (!raw) return;
+
+                const uidMatch = raw.match(/\d{9}/) || raw.match(/\d+/);
+                if (!uidMatch) {
+                    resultsDiv.innerHTML = `<div class="warning">Invalid UID format: "${raw}".</div>`;
+                    scanInput.value = '';
+                    scanInput.focus();
+                    return;
+                }
+                const uid = uidMatch[0];
+
+                // quick debug: if lookup is small, show a hint
+                if (!lookup || Object.keys(lookup).length === 0) {
+                    resultsDiv.innerHTML = `<div class="warning">No roster loaded. Please parse CSV files first.</div>`;
+                    scanInput.value = '';
+                    scanInput.focus();
+                    return;
+                }
+
+                if (!lookup[uid]) {
+                    resultsDiv.innerHTML = `<div class="warning">UID ${uid} not found in roster. Loaded UIDs: ${Object.keys(lookup).length}. If you think it should be there, check file mappings above (headers or file type).</div>`;
+                    // also show a tiny sample of first 8 loaded UIDs for debugging
+                    const sample = Object.keys(lookup).slice(0, 8).join(', ');
+                    const sdiv = document.createElement('div'); sdiv.className = 'small-muted'; sdiv.textContent = `Sample loaded UIDs: ${sample}${Object.keys(lookup).length > 8 ? ', ...' : ''}`;
+                    resultsDiv.appendChild(sdiv);
+                    scanInput.value = '';
+                    scanInput.focus();
+                    return;
+                }
+
+                if (scannedUIDs.has(uid)) {
+                    displayScanResult(lookup[uid], true);
+                    scanInput.value = '';
+                    scanInput.focus();
+                    return;
+                }
+
+                scannedUIDs.add(uid);
+                // log entry with timestamp
+                scanLog.push({
+                    timestamp: new Date().toLocaleString(),
+                    uid,
+                    name: lookup[uid].name || '',
+                    badgeType: lookup[uid].badgeType || '',
+                    ic: lookup[uid].ic || '',
+                    room: lookup[uid].room || '',
+                    ea: lookup[uid].ea || ''
+                });
+                displayScanResult(lookup[uid], false);
+                updateCounter();
+                scanInput.value = '';
+                scanInput.focus();
+            });
+
+            // export to xlsx (SheetJS)
+            exportBtn.addEventListener('click', () => {
+                if (!scanLog.length) {
+                    alert('No scans to export.');
+                    return;
+                }
+                const wsData = [
+                    ['Timestamp', 'UID', 'Name', 'Badge Type', 'Issue Code', 'Room', 'EA Flag']
+                ];
+                scanLog.forEach(r => {
+                    wsData.push([r.timestamp, r.uid, r.name, r.badgeType, r.ic, r.room, r.ea]);
+                });
+                const ws = XLSX.utils.aoa_to_sheet(wsData);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'ScanLog');
+
+                function formatFilenameDate(date) {
+                    const mm = String(date.getMonth() + 1).padStart(2, '0');
+                    const dd = String(date.getDate()).padStart(2, '0');
+                    const yyyy = date.getFullYear();
+
+                    let hours = date.getHours();
+                    const minutes = String(date.getMinutes()).padStart(2, '0');
+                    const ampm = hours >= 12 ? 'PM' : 'AM';
+                    hours = hours % 12 || 12;
+
+                    return `${mm}-${dd}-${yyyy}_${hours}-${minutes}${ampm}`;
+                }
+
+                const filename = `scan_log_${formatFilenameDate(new Date())}.xlsx`;
+                XLSX.writeFile(wb, filename);
+            });
+
+
+            // clear log
+            clearBtn.addEventListener('click', () => {
+                if (clearBtn.classList.contains('disabled')) return;
+                if (!confirm('Clear all scanned logs and counters?')) return;
+                scannedUIDs.clear();
+                scanLog = [];
+                resultsDiv.innerHTML = '';
+                updateCounter();
+                scanInput.focus();
+            });
+
+            // manual rebuild button if user changed file mapping externally
+            rebuildBtn.addEventListener('click', () => {
+                buildLookup();
+                renderFileMappingUI();
+                loadSummary.innerHTML = `Lookup rebuilt. Count: <strong>${Object.keys(lookup).length}</strong> UIDs.`;
+            });
+
+            // parse button
+            parseBtn.addEventListener('click', () => {
+                if (!csvFilesInput.files.length) { alert('Please select CSV files first.'); return; }
+                parseAllFiles(csvFilesInput.files);
+            });
+
+            // initial UI text
+            fileMappingArea.innerHTML = '<div class="small-muted">No files selected.</div>';
+            loadSummary.innerHTML = 'Choose CSVs and click "Parse & Detect Files".';
+
+            // Dark mode toggle button
+            toggleBtn.addEventListener('click', () => {
+                document.body.classList.toggle('dark-mode');
+            });
+
+        })();
+    </script>
+</body>
+</html>
